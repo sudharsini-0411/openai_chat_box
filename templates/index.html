@@ -17,11 +17,11 @@
 
     .chat-container {
       background-color: pink;
-      padding: 40px;
+      padding: 80px;
       border-radius: 16px;
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
-      width: 500px;
-      max-height: 90vh;
+      width: 800px;
+      max-height: 100vh;
       display: flex;
       flex-direction: column;
     }
@@ -78,14 +78,39 @@
       align-self: flex-end;
     }
 
+    .message img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      margin-top: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
     .button-voice {
       display: flex;
       align-items: center;
       gap: 6px;
+      white-space: nowrap;
     }
 
     .icon {
       font-size: 18px;
+    }
+
+    .button-voice:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .listening {
+      background-color: #ff6b6b !important;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
     }
   </style>
 </head>
@@ -107,19 +132,121 @@
       <input type="text" id="user-input" placeholder="Type your message here..." />
       <button onclick="sendMessage()">Send</button>
       <button onclick="startVoice()" class="button-voice">🎤 Voice</button>
+      <button onclick="document.getElementById('file-input').click()" class="button-voice">📎 Upload</button>
+      <button onclick="generateImage()" class="button-voice">🎨 Generate</button>
+      <button onclick="readAloud()" class="button-voice">🔊 Read</button>
+      <button onclick="showFiles()" class="button-voice">📁 Files</button>
     </div>
+    
+    <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.gif" style="display: none;" onchange="handleFileUpload(event)">
 
     <div id="chat-box"></div>
   </div>
 
   <script>
-    function appendMessage(message, sender) {
+    let lastBotMessage = "";
+    let speechSynthesis = window.speechSynthesis;
+    let currentUtterance = null;
+
+    function appendMessage(message, sender, isError = false) {
       const chatBox = document.getElementById("chat-box");
       const msgDiv = document.createElement("div");
-      msgDiv.className = `message ${sender}`;
-      msgDiv.innerText = message;
+      msgDiv.className = `message ${sender}${isError ? ' error' : ''}`;
+      
+      if (typeof message === 'string' && message.includes('<')) {
+        msgDiv.innerHTML = message;
+      } else {
+        msgDiv.innerText = message;
+      }
+      
       chatBox.appendChild(msgDiv);
       chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function handleFileUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      appendMessage(`📎 Uploading ${file.name}...`, "user");
+
+      fetch("/upload", {
+        method: "POST",
+        body: formData
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.error) {
+          appendMessage(`❌ ${data.error}`, "bot", true);
+        } else if (data.success && data.file_info) {
+          const info = data.file_info;
+          let infoMessage = `✅ File uploaded successfully!\n\n`;
+          infoMessage += `📁 Name: ${info.filename}\n`;
+          infoMessage += `📏 Size: ${(info.size / 1024).toFixed(2)} KB\n`;
+          infoMessage += `📋 Type: ${info.type.toUpperCase()}\n`;
+          if (info.pages) {
+            infoMessage += `📖 Pages: ${info.pages}\n`;
+          }
+          infoMessage += `💾 Saved to: uploads/${info.filename}\n`;
+          
+          appendMessage(infoMessage, "bot");
+          
+          if (info.content && info.content.length > 0) {
+            appendMessage(`📄 Content Preview:\n${info.content}`, "bot");
+          }
+        }
+      })
+      .catch(err => {
+        appendMessage(`❌ Upload error: ${err.message}`, "bot", true);
+      });
+      
+      event.target.value = '';
+    }
+
+    function readAloud() {
+      // If currently reading, stop it
+      if (currentUtterance && speechSynthesis.speaking) {
+        speechSynthesis.cancel();
+        currentUtterance = null;
+        document.querySelector('.button-voice:last-child').innerHTML = '🔊 Read';
+        return;
+      }
+
+      if (!lastBotMessage) {
+        alert("No message to read aloud");
+        return;
+      }
+
+      if ('speechSynthesis' in window) {
+        currentUtterance = new SpeechSynthesisUtterance(lastBotMessage);
+        currentUtterance.rate = 0.8;
+        currentUtterance.pitch = 1;
+        
+        currentUtterance.onstart = function() {
+          document.querySelector('.button-voice:last-child').innerHTML = '⏹️ Stop';
+        };
+        
+        currentUtterance.onend = function() {
+          currentUtterance = null;
+          document.querySelector('.button-voice:last-child').innerHTML = '🔊 Read';
+        };
+        
+        currentUtterance.onerror = function() {
+          currentUtterance = null;
+          document.querySelector('.button-voice:last-child').innerHTML = '🔊 Read';
+        };
+        
+        speechSynthesis.speak(currentUtterance);
+      } else {
+        alert("Speech synthesis not supported in this browser");
+      }
     }
 
     function sendMessage() {
@@ -134,14 +261,13 @@
 
       fetch("/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, personality })
       })
       .then(res => res.json())
       .then(data => {
         appendMessage(data.response, "bot");
+        lastBotMessage = data.response;
       })
       .catch(err => {
         appendMessage("Error: " + err.message, "bot");
@@ -149,20 +275,142 @@
     }
 
     function startVoice() {
+      if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        alert("Voice input not supported in this browser");
+        return;
+      }
+
       const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
       recognition.lang = 'en-US';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      
+      // Show listening indicator
+      const voiceBtn = document.querySelector('.button-voice');
+      const originalText = voiceBtn.innerHTML;
+      voiceBtn.innerHTML = '🎙️ Listening...';
+      voiceBtn.disabled = true;
+      
       recognition.start();
 
       recognition.onresult = function(event) {
         const transcript = event.results[0][0].transcript;
         document.getElementById("user-input").value = transcript;
+        voiceBtn.innerHTML = originalText;
+        voiceBtn.disabled = false;
         sendMessage();
       };
 
       recognition.onerror = function(event) {
-        alert("Voice input error: " + event.error);
+        voiceBtn.innerHTML = originalText;
+        voiceBtn.disabled = false;
+        
+        let errorMessage = "Voice input error: ";
+        switch(event.error) {
+          case 'no-speech':
+            errorMessage += "No speech detected. Please try again.";
+            break;
+          case 'audio-capture':
+            errorMessage += "Microphone not available.";
+            break;
+          case 'not-allowed':
+            errorMessage += "Microphone access denied.";
+            break;
+          case 'network':
+            errorMessage += "Network error occurred.";
+            break;
+          default:
+            errorMessage += event.error;
+        }
+        alert(errorMessage);
+      };
+
+      recognition.onend = function() {
+        voiceBtn.innerHTML = originalText;
+        voiceBtn.disabled = false;
       };
     }
+
+    function generateImage() {
+      const input = document.getElementById("user-input");
+      const prompt = input.value.trim();
+      
+      if (prompt === "") {
+        alert("Please enter a description for the image you want to generate");
+        return;
+      }
+      
+      appendMessage(`🎨 Generating image: "${prompt}"`, "user");
+      input.value = "";
+      
+      fetch("/generate-image", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ prompt: prompt })
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.error) {
+          appendMessage(`❌ ${data.error}`, "bot", true);
+        } else if (data.success && data.image_url) {
+          const chatBox = document.getElementById("chat-box");
+          const msgDiv = document.createElement("div");
+          msgDiv.className = "message bot";
+          msgDiv.innerHTML = `
+            <p>✅ Generated image for: "${data.prompt}"</p>
+            <img src="${data.image_url}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+          `;
+          chatBox.appendChild(msgDiv);
+          chatBox.scrollTop = chatBox.scrollHeight;
+        }
+      })
+      .catch(err => {
+        appendMessage(`❌ Image generation error: ${err.message}`, "bot", true);
+      });
+    }
+
+    function showFiles() {
+      appendMessage("📁 Loading files from upload folder...", "user");
+      
+      fetch("/files", {
+        method: "GET"
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        if (data.error) {
+          appendMessage(`❌ ${data.error}`, "bot", true);
+        } else if (data.files && data.files.length > 0) {
+          let filesMessage = `📂 Upload Folder Contents (${data.files.length} files):\n\n`;
+          
+          data.files.forEach((file, index) => {
+            const date = new Date(file.modified * 1000).toLocaleDateString();
+            filesMessage += `${index + 1}. 📄 ${file.filename}\n`;
+            filesMessage += `   📏 Size: ${(file.size / 1024).toFixed(2)} KB\n`;
+            filesMessage += `   📅 Modified: ${date}\n\n`;
+          });
+          
+          appendMessage(filesMessage, "bot");
+        } else {
+          appendMessage("📂 Upload folder is empty. No files found.", "bot");
+        }
+      })
+      .catch(err => {
+        appendMessage(`❌ Error loading files: ${err.message}`, "bot", true);
+      });
+    }
+    
   </script>
 </body>
 </html>
